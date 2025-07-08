@@ -1,0 +1,32 @@
+version : 3.8
+
+
+services:
+  timescale_db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: timescale_db
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_PASSWORD= timescale
+      - POSTGRES_USER= timescale
+      - POSTGRES_DB= wearipedia
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+
+  etl:
+    build:
+      context: ./etl
+      dockerfile: Dockerfile
+    container_name: etl
+    restart: on-failure
+    depends_on:
+      - timescale_db
+    environment:
+      -POSTGRES_USER=timescale
+      -POSTGRES_PASSWORD=timescale
+      -POSTGRES_DB = wearipedia
+
+volumes:
+  timescaledb-data:
