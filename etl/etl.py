@@ -1,3 +1,4 @@
+import datetime
 import wearipedia
 import base64
 import hashlib
@@ -15,7 +16,10 @@ from scipy import stats
 from scipy.ndimage import gaussian_filter
 import numpy as np
 import os
+import psycopg2
 access_token = ""
+
+user_id = 1 if os.getenv("IS_SYNTHETIC") else os.getenv("CLIENT_ID")
 
 def fetch_data(start_date, end_date):
   params = {"seed": 100, "start_date": start_date , "end_date": end_date }
@@ -33,11 +37,10 @@ def fetch_data(start_date, end_date):
   hr = device.get_data("intraday_heart_rate", params)
   hrv = device.get_data("intraday_hrv", params)
   spo2 = device.get_data("intraday_spo2", params)
-  
   return br, azm, activity, hr, hrv, spo2 
 
+#function to transform a single instance of br intraday data
 def transform_br(br_instance):
-
   record = br_instance['br'][0]
   date = br_instance['br'][0]['dateTime']
   sleep_summary = record['value']
@@ -45,42 +48,147 @@ def transform_br(br_instance):
   rem_sleep_br = sleep_summary['remSleepSummary']['breathingRate']
   light_sleep_br = sleep_summary['lightSleepSummary']['breathingRate']
   full_sleep_br  = sleep_summary['fullSleepSummary']['breathingRate']
-  return deep_sleep_br, rem_sleep_br, light_sleep_br, full_sleep_br, date
+  date = transform_date(date)
+  record = (date, user_id, None, None, None, None, None, deep_sleep_br, rem_sleep_br, light_sleep_br, full_sleep_br,None, None, None, None, None, None)
+  return record
 
+#function to transform a single instance of hr intraday data
 def transform_hr(hr_instance):
-
   date = hr_instance['heart_rate_day'][0]['activities-heart'][0]['dateTime']
   hr_data = hr_instance['activities-heart-intraday']['dataset']
-  #we can probably return a list of tuples for insertion here
-  return date, hr_data
+  final_records = []
+  for record_second in hr_data:
+     time = record_second['time']
+     hr = record_second['value']
+     final_datetime =  transform_date(date + 'T' + time)
+     transformed_record = (final_datetime, user_id, hr, None,None,None,None,None,None,None,None,None,None,None,None,None,None)
+     final_records.append(transformed_record) 
+  return final_records
 
+#function to transform a single instance of hrv intraday data
 def transform_hrv(hrv_instance):
-  hrv_data = hrv_instance['hrv']
-  return hrv_data
+  hrv_data = hrv_instance['hrv'][0]['minutes']
+  final_records = []
+  for record_second in hrv_data:
+     date_time = record_second['minute']
+     transformed_datetime = transform_date(date_time)
+     rmssd =  record_second['value']['rmssd']
+     coverage = record_second['value']['coverage']
+     hf =  record_second['value']['hf']
+     lf =  record_second['value']['lf']
 
+     final_record = (transformed_datetime, user_id, None, rmssd, hf, lf, coverage, None, None, None, None, None, None, None, None, None, None)
+     final_records.append(final_record)
+  return final_records
+
+#function to transform a single instance of spo2 intraday data
 def transform_spo2(spo2_instance):
-  dateTime = spo2_instance['dateTime']
   spo2_data = spo2_instance['minutes']
-  return spo2_data
+  final_records = []
+  for record in spo2_data:
+     spo2 = record['value']
+     transformed_datetime = transform_date(record['minute'])
+     transformed_record = (transformed_datetime,user_id, None, None, None, None, None, None, None, None, None, None,spo2,None, None,None,None)
+     final_records.append(transformed_record)
+    
+  return final_records
 
-def transform_azm(): 
-  pass
+#function to transform a single instance of azm intraday data
+def transform_azm(azm_instance):
+  datetime = azm_instance['activities-active-zone-minutes-intraday'][0]['dateTime']
+  azm_data = azm_instance['activities-active-zone-minutes-intraday'][0]['minutes']
+  final_records = []
+  for azm_record in azm_data:
+    minute = azm_record['minute']
+    transformed_datetime = transform_date(datetime+'T'+minute)
+    value = azm_record['value']
+    if 'fatBurnActiveZoneMinutes' in value:
+        fatburn_azm = value['fatBurnActiveZoneMinutes']
+    elif 'cardioActiveZoneMinutes' in value:
+        cardio_azm = value['cardioActiveZoneMinutes']
+    elif 'peakActiveZoneMinutes' in value:
+        peak_azm = value['peakActiveZoneMinutes']
 
+    azm = value['activeZoneMinutes']
 
+    final_record = (transformed_datetime, user_id, None,None,None,None,None,None,None,None,None,None,None, fatburn_azm, peak_azm, cardio_azm, azm)
+    final_records.append(final_record)
+
+  return final_records
+
+#function to transform a single instance of activity intraday data
 def transform_activity(activity_instance): 
   dateTime = activity_instance['dateTime']
   activity = activity_instance['value']
-  return dateTime, activity
+  transformed_date = transform_date(dateTime)
+  transformed_record = (transformed_date, user_id,None,None,None,None,None,None,None,None,None,activity,None,None,None,None,None)
+  return transformed_record
 
+def transform_date(date_string):
+  try:
+        dt_naive = datetime.strptime(date_string, "%Y-%m-%dT%H:%M:%S")
+        return dt_naive.replace(tzinfo=datetime.timezone.utc)
+  except ValueError:
+        print(f"Error parsing date string: {date_string}")
+        return None
 
-def connect_db():
-  pass
+def upsert_wearable_data(data_rows):
+    upsert_sql = """
+        INSERT INTO raw_data (
+            time, user_id, heart_rate, rmssd_hrv, hf_hrv, lf_hrv, 
+            coverage_hrv, deep_sleep_br, rem_sleep_br, light_sleep_br, 
+            full_sleep_br, activity, spo2, fat_burn_azm, peak_azm, 
+            cardio_azm, azm
+        )
+        VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+        )
+        ON CONFLICT (user_id, time) DO UPDATE SET
+            heart_rate = COALESCE(EXCLUDED.heart_rate, raw_data.heart_rate),
+            rmssd_hrv = COALESCE(EXCLUDED.rmssd_hrv, raw_data.rmssd_hrv),
+            hf_hrv = COALESCE(EXCLUDED.hf_hrv, raw_data.hf_hrv),
+            lf_hrv = COALESCE(EXCLUDED.lf_hrv, raw_data.lf_hrv),
+            coverage_hrv = COALESCE(EXCLUDED.coverage_hrv, raw_data.coverage_hrv),
+            deep_sleep_br = COALESCE(EXCLUDED.deep_sleep_br, raw_data.deep_sleep_br),
+            rem_sleep_br = COALESCE(EXCLUDED.rem_sleep_br, raw_data.rem_sleep_br),
+            light_sleep_br = COALESCE(EXCLUDED.light_sleep_br, raw_data.light_sleep_br),
+            full_sleep_br = COALESCE(EXCLUDED.full_sleep_br, raw_data.full_sleep_br),
+            activity = COALESCE(EXCLUDED.activity, raw_data.activity),
+            spo2 = COALESCE(EXCLUDED.spo2, raw_data.spo2),
+            fat_burn_azm = COALESCE(EXCLUDED.fat_burn_azm, raw_data.fat_burn_azm),
+            peak_azm = COALESCE(EXCLUDED.peak_azm, raw_data.peak_azm),
+            cardio_azm = COALESCE(EXCLUDED.cardio_azm, raw_data.cardio_azm),
+            azm = COALESCE(EXCLUDED.azm, raw_data.azm);
+    """
+    
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            host=os.getenv("DB_HOST"),
+            port= os.getenv("DB_PORT"),
+            dbname= os.getenv("DB_NAME"),
+            user= os.getenv("DB_USER"),
+            password= os.getenv("DB_PASSWORD")
+        )
+        cursor = conn.cursor()
+        print("Connection to TimescaleDB successful.")
 
-def load():
-  pass
+        cursor.executemany(upsert_sql, data_rows)
+        conn.commit()
+        print(f"Successfully upserted {cursor.rowcount} row(s).")
+
+    except psycopg2.Error as e:
+        print(f" Database error: {e}")
+        if conn:
+            conn.rollback()
+    finally:
+        if conn:
+            conn.close()
+            print("Connection closed.")
+
 
 
 if __name__ == "__main__" :
   br,azm, activity, hr, hrv, spo2 = fetch_data(os.getenv("START_DATE"), os.getenv("END_DATE"))
-  
+
 
