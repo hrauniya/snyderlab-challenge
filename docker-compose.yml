@@ -15,18 +15,23 @@ services:
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
       - timescale_data:/var/lib/postgresql/data
 
-  # etl:
-  #   build:
-  #     context: ./etl
-  #     dockerfile: Dockerfile
-  #   container_name: etl
-  #   restart: on-failure
-  #   depends_on:
-  #     - timescale_db
-  #   environment:
-  #     - POSTGRES_USER=timescale
-  #     - POSTGRES_PASSWORD=timescale
-  #     - POSTGRES_DB=wearipedia
+  etl:
+    build:
+      context: ./etl
+    container_name: etl_service
+    restart: on-failure
+    depends_on:
+      - timescale_db
+    environment:
+      - DB_HOST=timescale_db
+      - DB_PORT=5432
+      - DB_NAME=wearipedia
+      - DB_USER=timescale
+      - DB_PASSWORD=timescale
+      - IS_SYNTHETIC=True
+      - CLIENT_ID="" 
+      - CLIENT_SECRET="" 
+      - ACCESS_TOKEN=""
 
 volumes:
   timescale_data:
