@@ -1,0 +1,2 @@
+30 2 * * * /usr/local/bin/python /app/etl.py >> /var/log/cron.log 2>&1
+
