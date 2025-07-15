@@ -1,0 +1,91 @@
+Task 0a
+
+1a. Assuming we are pulling 4 metrics from the Fitbit(heart_rate, steps, distance, spo2) at
+a 1 second resolution for 1 year. Also assuming, that 1 datapoint consists of all 4 metrics, and does not
+account for individual metrics.
+
+For n=1 participant, we would collect 365*24*60*60 = 31536000 data points
+For n=1000 participants, we would collect 31536000*1000 = 31536000000 data points
+For n=10,000 participants, we would collect 31536000*10000 = 315360000000 data points
+
+1b. For a single participant, in 1 year we would collect 365*24*60*60 = 3153600 data points
+Accordingly, in two years we'd have 3153600*2 = 6307200 datapoints
+In 5 years, we'd have 3153600*5 = 15768000 datapoints
+
+
+2. To store 1 data point(heart_rate, steps, distance, and spo2) especially as values in native Postgres
+using integer for (heart_rate, steps) and real for (spo2, distance) would be most appropriate since heart_rate, steps
+are displayed in whole numbers, and spo2, distance may return decimal values from the tracker. Consequently, both of 
+those datatypes take 4 bytes of space, so in total to store 1 data point we would need 4*4= 16 bytes of space.
+
+a. Assuming all 3 metrics appropriately take 4 bytes of data(different from 4 metrics mentioned above-- I don't know if this is a mistake)
+and there are 1000 participants for a duration of 2 years at 1 second resolution, we would need :
+
+1 data point = 3 metrics = 3* 4 bytes = 12 bytes of data
+
+From above, we calculated that for 1000 participants, we would collect 31536000000 at 1 second resolution for 1 year,
+so for a duration of two years we would have  31536000000*2 = 63072000000 data points
+
+So, 63072000000* 12 bytes = 756864000000 bytes which is ~ 756.864 GB of data
+
+
+b. If we consider a compression rate of 80%, that would be 80% of 756.864GB, which is
+605.4912 of compression, which means the new total data size using something like Timescale
+would be 756.864-605.491 = ~ 151.373 GB of data
+
+i.Time Series DBs can compress data by a large percentage as they essentially use the
+timestamp or the time column to their advantage and make use of compression algorithms to effectively use less data to represent the same data that was 
+available before. For example, if we have a heartbeat column, timescale will essentially just store the first heartbeat actual value and the deltas to it
+ thereafter for the latter timestamps essentially saving up a few bits/bytes of data due to bitpacking. For a large dataset, this adds up. For other datatypes 
+ like strings it can use other techniques like dictionary plus run length encoding etc. Basically, TimeSeries databases like TimeScale can compress datapoints
+  well which are repeated( through something like run length encoding), change gradually and predictably(delta, delta of delta, gorilla encoding). TSDBs also 
+  use columnar storage where instead of storing row values they store columnar values which makes it easier for the compression algorithms to work.
+
+Health Data like heart rate, spo2, steps, and distance are great for compression as for a 1 second resolution they change minimally or not at all which makes
+ them repetable and high compressable. TimeScale can then make effective usage of something like delta encoding or run length to compress the data significantly. 
+ On the other hand, if we have datapoints that produce deltas which are highly random then the compression would not be ideal. For example if we have a datapoint
+  going from 0 to 100, storing the delta of 100 would do us no good as it is the same as storing the value itself. Both would essentially take the same amount to store.
+   Ideally, deltas which are small, repeating and patterned are best for compression.
+
+
+3.
+a. Some metrics that maybe useful for a physical activity to sleep study
+    = Activity(Steps) , Resolution = 1 day
+    = Breathing Rate(deep,rem, light, full), Resolution = 1 day
+    = Heart Rate , Resolution = 1 second
+    = Sleep(total minutes in Rem, deep, light, wake for the day alogn with other metrics like totalMinutesAsleep, TotalTimeInBed ), Resolution = 1 day
+    = Activity Zone Monitor(fatburn, peak, cardio) = 1 minute
+    = Spo2 = 1 minute
+
+3b. Using 4 bytes integer and reals for all metrics listed above:
+
+    Steps = 4 bytes * 365 = 1460 bytes
+    Breathing Rate metrics = 4 bytes * 4 metrics = 16 bytes * 365 = 5840
+    Heart Rate = 4 bytes * 31536000 = 126144000 bytes 
+    Sleep = 4 bytes * 6 metrics = 20 bytes * 365 = 7300 bytes
+    AZM = 4 bytes * 3 metrics = 12 bytes * 525600 mins in a year = 6307200 bytes
+    SPO2 = 4 bytes * 525600 = 2102400 bytes
+
+    134568200 bytes * 1000 participants = 134568200000 bytes = ~ 134.5682 GB of data
+
+3c.  134.5682 GB * 0.20 = ~ 26.9136 GB of data after compression
+
+
+4. For query large amounts of time ranges, we would probably need to aggregate the data for 
+periods of times keeping track of average, max, min (the statistics for a certain period), so that 
+those values now represent for a certain period of time when the range is too large. For large periods of time
+sending the finest resolution would take a toll on latency etc so we could use our aggregated values
+instead . Now we store aggregates with our raw data.
+
+5a . To maintain high ingestion speeds, and query performance for multiple users across
+different time ranges, a feasible limit might be 128 GB of RAM, with 300TB NVme storage with a 64
+core CPU.
+
+5b. For horizontal scaling, we would probably need to divide our data into shards which would live
+on multiple servers. This would mean that we would need a strategy -- how do we decide where the
+incoming ingestion data goes(on which server)? Furthermore, while querying we would also need to know
+where a certain piece of data is so that we can successfully access it. We would need to look
+at partitioning strategies and ways to retrieve the needed data(hash, partition key etc.).
+We'd also need to decide if we shard the data by time or a particular column(like metrics).
+Finally, if a query needs to access multiple shards, we might have to dedicate one node altogether to
+make sense of what comes out of all the shards to build the final result of the query.
